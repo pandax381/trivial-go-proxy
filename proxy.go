@@ -33,41 +33,41 @@ import (
 	"syscall"
 )
 
-type config struct {
-	laddr      string
-	saddr      string
-	raddr      string
-	tlsAccept  bool
-	tlsKey     string
-	tlsCert    string
-	tlsConnect bool
+type Config struct {
+	ListenAddr string
+	SourceAddr string
+	RemoteAddr string
+	TLSAccept  bool
+	TLSKey     string
+	TLSCert    string
+	TLSConnect bool
 }
 
-type proxy struct {
-	conf config
+type Proxy struct {
+	conf Config
 	cert tls.Certificate
 	quit chan bool
 }
 
-func NewProxy(conf config) *proxy {
+func NewProxy(conf Config) *Proxy {
 	var cert tls.Certificate
-	if conf.tlsAccept {
+	if conf.TLSAccept {
 		var err error
-		cert, err = tls.LoadX509KeyPair(conf.tlsCert, conf.tlsKey)
+		cert, err = tls.LoadX509KeyPair(conf.TLSCert, conf.TLSKey)
 		if err != nil {
 			log.Println(err)
 			return nil
 		}
 	}
-	return &proxy{
+	return &Proxy{
 		conf: conf,
 		cert: cert,
 		quit: make(chan bool),
 	}
 }
 
-func (p *proxy) Run() {
-	listener, err := net.Listen("tcp", p.conf.laddr)
+func (p *Proxy) Run() {
+	listener, err := net.Listen("tcp", p.conf.ListenAddr)
 	if err != nil {
 		log.Println(err)
 		return
@@ -104,7 +104,7 @@ func (p *proxy) Run() {
 	// does not reach
 }
 
-func (p *proxy) handle(conn1 net.Conn, wg *sync.WaitGroup, quit chan bool) {
+func (p *Proxy) handle(conn1 net.Conn, wg *sync.WaitGroup, quit chan bool) {
 	defer func() {
 		if err := recover(); err != nil {
 			log.Println(err)
@@ -113,7 +113,7 @@ func (p *proxy) handle(conn1 net.Conn, wg *sync.WaitGroup, quit chan bool) {
 		log.Println("Close Session")
 	}()
 	log.Println("Accept New Session")
-	if p.conf.tlsAccept {
+	if p.conf.TLSAccept {
 		tlsConfig := &tls.Config{
 			Certificates: []tls.Certificate{p.cert},
 		}
@@ -121,12 +121,12 @@ func (p *proxy) handle(conn1 net.Conn, wg *sync.WaitGroup, quit chan bool) {
 	}
 	defer conn1.Close()
 	log.Println("Connect Remote Host")
-	saddr, err := net.ResolveTCPAddr("tcp", p.conf.saddr)
+	saddr, err := net.ResolveTCPAddr("tcp", p.conf.SourceAddr)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	raddr, err := net.ResolveTCPAddr("tcp", p.conf.raddr)
+	raddr, err := net.ResolveTCPAddr("tcp", p.conf.RemoteAddr)
 	if err != nil {
 		log.Println(err)
 		return
@@ -137,7 +137,7 @@ func (p *proxy) handle(conn1 net.Conn, wg *sync.WaitGroup, quit chan bool) {
 		log.Println(err)
 		return
 	}
-	if p.conf.tlsConnect {
+	if p.conf.TLSConnect {
 		tlsConfig := &tls.Config{
 			InsecureSkipVerify: true,
 		}
@@ -182,32 +182,24 @@ func transfer(dst, src net.Conn, complete chan<- int64) {
 	complete <- n
 }
 
-func (p *proxy) shutdown() {
+func (p *Proxy) Shutdown() {
 	close(p.quit)
 }
 
 func main() {
-	laddr := flag.String("l", ":8000", "Listen Address")
-	saddr := flag.String("s", "", "Source Address")
-	raddr := flag.String("r", "localhost:8080", "Remote Address")
-	tlsAccept := flag.Bool("tls-accept", false, "Enable TLS Accept")
-	tlsCert := flag.String("tls-cert", "./server.crt", "Certificate File")
-	tlsKey := flag.String("tls-key", "./server.key", "Privatekey File")
-	tlsConnect := flag.Bool("tls-connect", false, "Enable TLS Connect")
+    config := Config{}
+	flag.StringVar(&config.ListenAddr, "l", ":8000", "Listen Address")
+	flag.StringVar(&config.SourceAddr, "s", "", "Source Address")
+	flag.StringVar(&config.RemoteAddr, "r", "localhost:8080", "Remote Address")
+	flag.BoolVar(&config.TLSAccept, "tls-accept", false, "Enable TLS Accept")
+	flag.StringVar(&config.TLSCert, "tls-cert", "./server.crt", "Certificate File")
+	flag.StringVar(&config.TLSKey,  "tls-key", "./server.key", "Privatekey File")
+	flag.BoolVar(&config.TLSConnect, "tls-connect", false, "Enable TLS Connect")
 	flag.Parse()
 
 	log.SetFlags(log.Ldate | log.Lmicroseconds | log.Lshortfile)
 	log.Println("PID:", os.Getpid())
 
-	config := config{
-		laddr:      *laddr,
-		saddr:      *saddr,
-		raddr:      *raddr,
-		tlsAccept:  *tlsAccept,
-		tlsCert:    *tlsCert,
-		tlsKey:     *tlsKey,
-		tlsConnect: *tlsConnect,
-	}
 	proxy := NewProxy(config)
 	complete := make(chan bool)
 	go func() {
@@ -220,7 +212,7 @@ func main() {
 		select {
 		case s := <-sigch:
 			log.Println("Recieve signal:", s)
-			proxy.shutdown()
+			proxy.Shutdown()
 		case <-complete:
 			log.Println("Good bye")
 			return

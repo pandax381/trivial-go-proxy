@@ -187,13 +187,13 @@ func (p *Proxy) Shutdown() {
 }
 
 func main() {
-    config := Config{}
+	config := Config{}
 	flag.StringVar(&config.ListenAddr, "l", ":8000", "Listen Address")
 	flag.StringVar(&config.SourceAddr, "s", "", "Source Address")
 	flag.StringVar(&config.RemoteAddr, "r", "localhost:8080", "Remote Address")
 	flag.BoolVar(&config.TLSAccept, "tls-accept", false, "Enable TLS Accept")
 	flag.StringVar(&config.TLSCert, "tls-cert", "./server.crt", "Certificate File")
-	flag.StringVar(&config.TLSKey,  "tls-key", "./server.key", "Privatekey File")
+	flag.StringVar(&config.TLSKey, "tls-key", "./server.key", "Privatekey File")
 	flag.BoolVar(&config.TLSConnect, "tls-connect", false, "Enable TLS Connect")
 	flag.Parse()
 

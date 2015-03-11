@@ -55,7 +55,7 @@ func NewProxy(conf config) *proxy {
 	}
 }
 
-func (p *proxy) run() {
+func (p *proxy) Run() {
 	listener, err := net.Listen("tcp", p.conf.laddr)
 	if err != nil {
 		log.Println(err)
@@ -63,117 +63,25 @@ func (p *proxy) run() {
 	}
 	log.Printf("Listen on %s\n", listener.Addr())
 	complete := make(chan bool)
-	go func() {
-		accept := make(chan net.Conn)
-		cond := sync.NewCond(&sync.Mutex{})
-		go func() {
-			wg := sync.WaitGroup{}
-			quit := make(chan bool)
-			for conn1 := range accept {
-				log.Println("Accept New Session")
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					defer log.Println("Close Session")
-					if p.conf.tlsAccept {
-						cert, err := tls.LoadX509KeyPair(p.conf.tlsCert, p.conf.tlsKey)
-						if err != nil {
-							log.Println(err)
-							conn1.Close()
-							return
-						}
-						tlsConfig := &tls.Config{
-							Certificates: []tls.Certificate{cert},
-						}
-						conn1 = tls.Server(conn1, tlsConfig)
-					}
-					log.Println("Connect Remote Host")
-					saddr, err := net.ResolveTCPAddr("tcp", p.conf.saddr)
-					if err != nil {
-						log.Println(err)
-						conn1.Close()
-						return
-					}
-					raddr, err := net.ResolveTCPAddr("tcp", p.conf.raddr)
-					if err != nil {
-						log.Println(err)
-						conn1.Close()
-						return
-					}
-					var conn2 net.Conn
-					conn2, err = net.DialTCP("tcp", saddr, raddr)
-					if err != nil {
-						log.Println(err)
-						conn1.Close()
-						return
-					}
-					if p.conf.tlsConnect {
-						tlsConfig := &tls.Config{
-							InsecureSkipVerify: true,
-						}
-						conn2 = tls.Client(conn2, tlsConfig)
-					}
-					complete := make(chan int64)
-					transfer := func(dst, src net.Conn) {
-						n, err := io.Copy(dst, src)
-						if err != nil {
-							log.Println(err)
-							if e, ok := err.(*net.OpError); ok && e.Err == syscall.EPIPE {
-								if _, ok := src.(*net.TCPConn); ok {
-									src.(*net.TCPConn).CloseRead()
-								} else {
-									src.Close()
-								}
-							}
-						}
-						if _, ok := dst.(*net.TCPConn); ok {
-							dst.(*net.TCPConn).CloseWrite()
-						} else {
-							dst.Close()
-						}
-						complete <- n
-					}
-					go transfer(conn1, conn2)
-					go transfer(conn2, conn1)
-					for n := 2; n > 0; n-- {
-						select {
-						case <-complete:
-							break
-						case <-quit:
-							conn1.Close()
-							conn2.Close()
-							for ; n > 0; n-- {
-								<-complete
-							}
-							return
-						}
-					}
-					// just in case
-					conn1.Close()
-					conn2.Close()
-				}()
-			}
-			close(quit)
-			wg.Wait()
-			cond.Signal()
-		}()
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				if e, ok := err.(net.Error); ok && e.Temporary() {
-					continue
-				}
-				listener.Close()
-				close(accept)
-				cond.L.Lock()
-				cond.Wait()
-				cond.L.Unlock()
-				close(complete)
-				return
-			}
-			accept <- conn
-		}
-	}()
+    go func() {
+        wg := &sync.WaitGroup{}
+        quit := make(chan bool)
+        for {
+            conn, err := listener.Accept()
+            if err != nil {
+                if e, ok := err.(net.Error); ok && e.Temporary() {
+                    continue
+                }
+                listener.Close()
+                close(quit)
+                wg.Wait()
+                close(complete)
+                return
+            }
+            wg.Add(1)
+            go p.handle(conn, wg, quit)
+        }
+    }()
 	for {
 		select {
 		case <-p.quit:
@@ -183,6 +91,89 @@ func (p *proxy) run() {
 		}
 	}
 	// does not reach
+}
+
+func (p *proxy) handle(conn1 net.Conn, wg *sync.WaitGroup, quit chan bool) {
+    defer wg.Done()
+    defer log.Println("Close Session")
+    log.Println("Accept New Session")
+    if p.conf.tlsAccept {
+        cert, err := tls.LoadX509KeyPair(p.conf.tlsCert, p.conf.tlsKey)
+        if err != nil {
+            log.Println(err)
+            conn1.Close()
+            return
+        }
+        tlsConfig := &tls.Config{
+            Certificates: []tls.Certificate{cert},
+        }
+        conn1 = tls.Server(conn1, tlsConfig)
+    }
+    log.Println("Connect Remote Host")
+    saddr, err := net.ResolveTCPAddr("tcp", p.conf.saddr)
+    if err != nil {
+        log.Println(err)
+        conn1.Close()
+        return
+    }
+    raddr, err := net.ResolveTCPAddr("tcp", p.conf.raddr)
+    if err != nil {
+        log.Println(err)
+        conn1.Close()
+        return
+    }
+    var conn2 net.Conn
+    conn2, err = net.DialTCP("tcp", saddr, raddr)
+    if err != nil {
+        log.Println(err)
+        conn1.Close()
+        return
+    }
+    if p.conf.tlsConnect {
+        tlsConfig := &tls.Config{
+            InsecureSkipVerify: true,
+        }
+        conn2 = tls.Client(conn2, tlsConfig)
+    }
+    complete := make(chan int64)
+    go transfer(conn1, conn2, complete)
+    go transfer(conn2, conn1, complete)
+    for n := 2; n > 0; n-- {
+        select {
+        case <-complete:
+            break
+        case <-quit:
+            conn1.Close()
+            conn2.Close()
+            for ; n > 0; n-- {
+                <-complete
+            }
+            return
+        }
+    }
+    // just in case
+    conn1.Close()
+    conn2.Close()
+}
+
+func transfer(dst, src net.Conn, complete chan<- int64) {
+    n, err := io.Copy(dst, src)
+    if err != nil {
+        log.Println(err)
+        if e, ok := err.(*net.OpError); ok && e.Err == syscall.EPIPE {
+            if _, ok := src.(*net.TCPConn); ok {
+                src.(*net.TCPConn).CloseRead()
+            } else {
+                src.Close()
+            }
+        }
+    }
+    if _, ok := dst.(*net.TCPConn); ok {
+        dst.(*net.TCPConn).CloseWrite()
+    } else {
+        dst.Close()
+    }
+    complete <- n
 }
 
 func (p *proxy) shutdown() {
@@ -215,7 +206,7 @@ func main() {
 	complete := make(chan bool)
 	go func() {
 		defer close(complete)
-		proxy.run()
+		proxy.Run()
 	}()
 	sigch := make(chan os.Signal)
 	signal.Notify(sigch, os.Interrupt)

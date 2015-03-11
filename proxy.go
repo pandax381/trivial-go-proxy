@@ -94,8 +94,13 @@ func (p *proxy) Run() {
 }
 
 func (p *proxy) handle(conn1 net.Conn, wg *sync.WaitGroup, quit chan bool) {
-	defer wg.Done()
-	defer log.Println("Close Session")
+	defer func() {
+		if err := recover(); err != nil {
+			log.Println(err)
+		}
+		wg.Done()
+		log.Println("Close Session")
+	}()
 	log.Println("Accept New Session")
 	if p.conf.tlsAccept {
 		cert, err := tls.LoadX509KeyPair(p.conf.tlsCert, p.conf.tlsKey)

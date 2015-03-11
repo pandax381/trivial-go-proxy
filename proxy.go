@@ -45,12 +45,23 @@ type config struct {
 
 type proxy struct {
 	conf config
+	cert tls.Certificate
 	quit chan bool
 }
 
 func NewProxy(conf config) *proxy {
+	var cert tls.Certificate
+	if conf.tlsAccept {
+		var err error
+		cert, err = tls.LoadX509KeyPair(conf.tlsCert, conf.tlsKey)
+		if err != nil {
+			log.Println(err)
+			return nil
+		}
+	}
 	return &proxy{
 		conf: conf,
+		cert: cert,
 		quit: make(chan bool),
 	}
 }
@@ -103,35 +114,27 @@ func (p *proxy) handle(conn1 net.Conn, wg *sync.WaitGroup, quit chan bool) {
 	}()
 	log.Println("Accept New Session")
 	if p.conf.tlsAccept {
-		cert, err := tls.LoadX509KeyPair(p.conf.tlsCert, p.conf.tlsKey)
-		if err != nil {
-			log.Println(err)
-			conn1.Close()
-			return
-		}
 		tlsConfig := &tls.Config{
-			Certificates: []tls.Certificate{cert},
+			Certificates: []tls.Certificate{p.cert},
 		}
 		conn1 = tls.Server(conn1, tlsConfig)
 	}
+	defer conn1.Close()
 	log.Println("Connect Remote Host")
 	saddr, err := net.ResolveTCPAddr("tcp", p.conf.saddr)
 	if err != nil {
 		log.Println(err)
-		conn1.Close()
 		return
 	}
 	raddr, err := net.ResolveTCPAddr("tcp", p.conf.raddr)
 	if err != nil {
 		log.Println(err)
-		conn1.Close()
 		return
 	}
 	var conn2 net.Conn
 	conn2, err = net.DialTCP("tcp", saddr, raddr)
 	if err != nil {
 		log.Println(err)
-		conn1.Close()
 		return
 	}
 	if p.conf.tlsConnect {
@@ -140,6 +143,7 @@ func (p *proxy) handle(conn1 net.Conn, wg *sync.WaitGroup, quit chan bool) {
 		}
 		conn2 = tls.Client(conn2, tlsConfig)
 	}
+	defer conn2.Close()
 	complete := make(chan int64)
 	go transfer(conn1, conn2, complete)
 	go transfer(conn2, conn1, complete)
@@ -156,9 +160,6 @@ func (p *proxy) handle(conn1 net.Conn, wg *sync.WaitGroup, quit chan bool) {
 			return
 		}
 	}
-	// just in case
-	conn1.Close()
-	conn2.Close()
 }
 
 func transfer(dst, src net.Conn, complete chan<- int64) {
